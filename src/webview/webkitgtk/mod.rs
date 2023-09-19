@@ -51,7 +51,7 @@ impl InnerWebView {
   pub fn new(
     window: Rc<Window>,
     mut attributes: WebViewAttributes,
-    _pl_attrs: super::PlatformSpecificWebViewAttributes,
+    pl_attrs: super::PlatformSpecificWebViewAttributes,
     web_context: Option<&mut WebContext>,
   ) -> Result<Self> {
     let window_rc = Rc::clone(&window);
@@ -373,10 +373,12 @@ impl InnerWebView {
       pending_scripts.push(js.into());
     } else {
       let cancellable: Option<&Cancellable> = None;
+      let span = SendEnteredSpan(tracing::debug_span!("wry::eval").entered());
 
       match callback {
         Some(callback) => {
-          self.webview.run_javascript(js, cancellable, |result| {
+          self.webview.run_javascript(js, cancellable, move |result| {
+            drop(span);
             let mut result_str = String::new();
 
             if let Ok(js_result) = result {
@@ -390,7 +392,9 @@ impl InnerWebView {
             callback(result_str);
           });
         }
-        None => self.webview.run_javascript(js, cancellable, |_| ()),
+        None => self.webview.run_javascript(js, cancellable, move |_| {
+            drop(span);
+        }),
       };
     }
 
@@ -498,3 +502,8 @@ pub fn platform_webview_version() -> Result<String> {
   };
   Ok(format!("{}.{}.{}", major, minor, patch))
 }
+
+// SAFETY: only use this when you are sure the span will be dropped on the same thread it was entered
+struct SendEnteredSpan(tracing::span::EnteredSpan);
+
+unsafe impl Send for SendEnteredSpan {}

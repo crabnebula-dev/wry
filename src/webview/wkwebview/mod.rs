@@ -130,6 +130,8 @@ impl InnerWebView {
     // Task handler for custom protocol
     extern "C" fn start_task(this: &Object, _: Sel, _webview: id, task: id) {
       unsafe {
+        let span = tracing::info_span!("wry::custom_protocol::handle", uri = tracing::field::Empty)
+          .entered();
         let function = this.get_ivar::<*mut c_void>("function");
         if !function.is_null() {
           let function =
@@ -139,10 +141,13 @@ impl InnerWebView {
           let request: id = msg_send![task, request];
           let url: id = msg_send![request, URL];
 
-          let nsstring = {
+          let uri_nsstring = {
             let s: id = msg_send![url, absoluteString];
             NSString(s)
           };
+          let uri = uri_nsstring.to_str();
+
+          span.record("uri", uri);
 
           // Get request method (GET, POST, PUT etc...)
           let method = {
@@ -151,9 +156,7 @@ impl InnerWebView {
           };
 
           // Prepare our HttpRequest
-          let mut http_request = Request::builder()
-            .uri(nsstring.to_str())
-            .method(method.to_str());
+          let mut http_request = Request::builder().uri(uri).method(method.to_str());
 
           // Get body
           let mut sent_form_body = Vec::new();
@@ -176,6 +179,8 @@ impl InnerWebView {
 
             let _: () = msg_send![body_stream, close];
           }
+
+          tracing::debug!("done reading body");
 
           // Extract all headers fields
           let all_headers: id = msg_send![request, allHTTPHeaderFields];
@@ -202,6 +207,9 @@ impl InnerWebView {
             Ok(final_request) => {
               let responder: Box<dyn FnOnce(HttpResponse<Cow<'static, [u8]>>)> = Box::new(
                 move |sent_response| {
+                  let _span =
+                    tracing::info_span!(parent: &span, "wry::custom_protocol::response").entered();
+
                   let content = sent_response.body();
                   // default: application/octet-stream, but should be provided by the client
                   let wanted_mime = sent_response.headers().get(CONTENT_TYPE);
@@ -239,6 +247,7 @@ impl InnerWebView {
                 },
               );
 
+              let _span = tracing::info_span!("wry::custom_protocol::call_handler").entered();
               function(final_request, RequestAsyncResponder { responder });
             }
             Err(_) => respond_with_404(),
@@ -883,9 +892,11 @@ r#"Object.defineProperty(window, 'ipc', {
     } else {
       // Safety: objc runtime calls are unsafe
       unsafe {
+        let span = Mutex::new(Some(tracing::debug_span!("wry::eval").entered()));
         let _: id = match callback {
           Some(callback) => {
-            let handler = block::ConcreteBlock::new(|val: id, _err: id| {
+            let handler = block::ConcreteBlock::new(move |val: id, _err: id| {
+              span.lock().unwrap().take();
               let mut result = String::new();
 
               if val != nil {
@@ -902,7 +913,14 @@ r#"Object.defineProperty(window, 'ipc', {
             msg_send![self.webview, evaluateJavaScript:NSString::new(js) completionHandler:handler]
           }
           None => {
-            msg_send![self.webview, evaluateJavaScript:NSString::new(js) completionHandler:null::<*const c_void>()]
+            let handler = block::ConcreteBlock::new(move |_object, _error| {
+              span.lock().unwrap().take();
+            });
+            // Put the block on the heap
+            let handler = handler.copy();
+            let completion_handler: &block::Block<(id, id), ()> = &handler;
+
+            msg_send![self.webview, evaluateJavaScript:NSString::new(js) completionHandler:completion_handler]
           }
         };
       }

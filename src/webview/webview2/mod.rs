@@ -599,6 +599,9 @@ window.addEventListener('mousemove', (e) => window.chrome.webview.postMessage('_
         webview
           .add_WebResourceRequested(
             &WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
+              let span =
+                tracing::info_span!("wry::custom_protocol::handle", uri = tracing::field::Empty)
+                  .entered();
               if let Some(args) = args {
                 let webview_request = args.Request()?;
                 let mut request = Request::builder();
@@ -654,6 +657,8 @@ window.addEventListener('mousemove', (e) => window.chrome.webview.postMessage('_
                 let mut uri = PWSTR::null();
                 webview_request.Uri(&mut uri)?;
                 let uri = take_pwstr(uri);
+
+                span.record("uri", &uri);
 
                 if let Some(custom_protocol) = custom_protocols
                   .iter()
@@ -890,9 +895,11 @@ window.addEventListener('mousemove', (e) => window.chrome.webview.postMessage('_
     callback: impl FnOnce(String) + Send + 'static,
   ) -> windows::core::Result<()> {
     unsafe {
+      let span = tracing::debug_span!("wry::eval").entered();
       webview.ExecuteScript(
         PCWSTR::from_raw(encode_wide(js).as_ptr()),
         &ExecuteScriptCompletedHandler::create(Box::new(|_, return_str| {
+          drop(span);
           callback(return_str);
           Ok(())
         })),
