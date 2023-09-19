@@ -122,6 +122,7 @@ impl InnerWebView {
 
     // Connect before registering as recommended by the docs
     manager.connect_script_message_received(None, move |_m, msg| {
+      let _span = tracing::info_span!("wry::ipc::handle").entered();
       if let Some(js) = msg.js_value() {
         if let Some(ipc_handler) = &ipc_handler {
           ipc_handler(&w, js.to_string());
@@ -373,10 +374,12 @@ impl InnerWebView {
       pending_scripts.push(js.into());
     } else {
       let cancellable: Option<&Cancellable> = None;
+      let span = SendEnteredSpan(tracing::debug_span!("wry::eval").entered());
 
       match callback {
         Some(callback) => {
-          self.webview.run_javascript(js, cancellable, |result| {
+          self.webview.run_javascript(js, cancellable, move |result| {
+            drop(span);
             let mut result_str = String::new();
 
             if let Ok(js_result) = result {
@@ -390,7 +393,9 @@ impl InnerWebView {
             callback(result_str);
           });
         }
-        None => self.webview.run_javascript(js, cancellable, |_| ()),
+        None => self.webview.run_javascript(js, cancellable, move |_| {
+          drop(span);
+        }),
       };
     }
 
@@ -498,3 +503,8 @@ pub fn platform_webview_version() -> Result<String> {
   };
   Ok(format!("{}.{}.{}", major, minor, patch))
 }
+
+// SAFETY: only use this when you are sure the span will be dropped on the same thread it was entered
+struct SendEnteredSpan(tracing::span::EnteredSpan);
+
+unsafe impl Send for SendEnteredSpan {}
