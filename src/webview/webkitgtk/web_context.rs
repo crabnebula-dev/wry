@@ -298,7 +298,8 @@ where
     .register_uri_scheme_as_secure(name);
 
   context.register_uri_scheme(name, move |request| {
-    let span = tracing::info_span!("wry::custom_protocol::handle", uri = tracing::field::Empty).entered();
+    let span =
+      tracing::info_span!("wry::custom_protocol::handle", uri = tracing::field::Empty).entered();
 
     if let Some(uri) = request.uri() {
       let uri = uri.as_str();
@@ -377,6 +378,9 @@ where
       let request_ = request.clone();
       let responder: Box<dyn FnOnce(HttpResponse<Cow<'static, [u8]>>)> =
         Box::new(move |http_response| {
+          let _span =
+            tracing::info_span!(parent: &span, "wry::custom_protocol::response").entered();
+
           let buffer = http_response.body();
           let input = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(buffer));
           let content_type = http_response
