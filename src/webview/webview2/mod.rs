@@ -685,6 +685,9 @@ window.addEventListener('mousemove', (e) => window.chrome.webview.postMessage('_
                   let responder: Box<dyn FnOnce(HttpResponse<Cow<'static, [u8]>>)> =
                     Box::new(move |sent_response| {
                       let handler = move || {
+                        let _span =
+                          tracing::info_span!(parent: &span, "wry::custom_protocol::response")
+                            .entered();
                         match prepare_web_request_response(&env, &sent_response) {
                           Ok(response) => {
                             let _ = args.SetResponse(&response);
